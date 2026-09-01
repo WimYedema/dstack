@@ -68,7 +68,7 @@ pub(crate) fn auth_unit_file(bin: &str, allowlist: &Path, port: u16, prefix: &Pa
          [Install]\nWantedBy=multi-user.target\n",
         bin = systemd_arg(bin),
         cfg = systemd_arg(&allowlist.display().to_string()),
-        wd = systemd_arg(&prefix.display().to_string()),
+        wd = systemd_plain_value(&prefix.display().to_string()),
     )
 }
 
@@ -83,8 +83,17 @@ pub(crate) fn vmm_unit_file(bin: &str, config: &Path, prefix: &Path, auth_unit: 
         auth = auth_unit,
         bin = systemd_arg(bin),
         cfg = systemd_arg(&config.display().to_string()),
-        wd = systemd_arg(&prefix.display().to_string()),
+        wd = systemd_plain_value(&prefix.display().to_string()),
     )
+}
+
+/// Escape a value for a plain single-value directive (e.g. WorkingDirectory=),
+/// which takes the rest of the line literally and does NOT support quoting.
+fn systemd_plain_value(value: &str) -> String {
+    // only '%' needs escaping here (specifier expansion); the value must not
+    // contain a newline, since directives are newline-delimited.
+    debug_assert!(!value.contains('\n'), "unit directive value cannot contain a newline");
+    value.replace('%', "%%")
 }
 
 fn systemd_arg(value: &str) -> String {
