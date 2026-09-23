@@ -35,6 +35,7 @@ mod gateway_checker;
 mod host_api;
 mod host_shared;
 mod parse_env_file;
+mod snp_derive;
 mod system_setup;
 mod utils;
 
@@ -1166,13 +1167,27 @@ fn gen_app_keys_from_seed(
         KeyProviderKind::Kms => {
             anyhow::bail!("KMS keys must be fetched from the KMS server")
         }
+        KeyProviderKind::SnpDerived => {
+            anyhow::bail!("SnpDerived keys are for KMS disk encryption only, not app keys")
+        }
     };
     make_app_keys(&key, &disk_key, &k256_key, 1, key_provider)
 }
 
-fn make_app_keys(
+pub fn make_app_keys(
     app_key: &KeyPair,
     disk_key: &KeyPair,
+    k256_key: &SigningKey,
+    ca_level: u8,
+    key_provider: KeyProvider,
+) -> Result<AppKeys> {
+    let disk_crypt_key = sha256(&disk_key.serialize_der());
+    make_app_keys_with_disk_key(app_key, &disk_crypt_key, k256_key, ca_level, key_provider)
+}
+
+pub fn make_app_keys_with_disk_key(
+    app_key: &KeyPair,
+    disk_crypt_key: &[u8],
     k256_key: &SigningKey,
     ca_level: u8,
     key_provider: KeyProvider,
@@ -1194,7 +1209,7 @@ fn make_app_keys(
         .context("Failed to self-sign certificate")?;
 
     Ok(AppKeys {
-        disk_crypt_key: sha256(&disk_key.serialize_der()).to_vec(),
+        disk_crypt_key: disk_crypt_key.to_vec(),
         env_crypt_key: vec![],
         k256_key: k256_key.to_bytes().to_vec(),
         k256_signature: vec![],

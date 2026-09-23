@@ -1652,7 +1652,7 @@ pub(crate) fn make_sys_config(
         "pccs_url": cfg.cvm.pccs_url,
         "collateral_urls": {
             "pccs": cfg.cvm.pccs_url,
-            "amd_kds": cfg.cvm.amd_kds_url,
+            "amd_kds": cfg.cvm.sev_snp_kds_url,
         },
         "nvidia_attestation_proxy_url": cfg.cvm.nvidia_attestation_proxy_url,
         "docker_registry": cfg.cvm.docker_registry,

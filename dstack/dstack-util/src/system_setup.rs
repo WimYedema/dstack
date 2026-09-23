@@ -48,6 +48,7 @@ use crate::{
     cmd_show_mrs,
     crypto::dh_decrypt,
     gen_app_keys_from_seed,
+    make_app_keys_with_disk_key,
     host_api::HostApi,
     host_shared::{mount_host_shared, unmount_host_shared},
     utils::{
@@ -64,6 +65,8 @@ use ra_tls::rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 use serde_human_bytes as hex_bytes;
 use serde_json::Value;
 use tpm_attest::{self as tpm, TpmContext};
+use ra_tls::kdf::{derive_key, derive_p256_key_pair_from_bytes};
+use k256::schnorr::SigningKey;
 
 fn attestation_verifier(sys_config: &SysConfig) -> Result<Arc<AttestationVerifier>> {
     Ok(Arc::new(default_verifier(&sys_config.collateral_urls())?))
@@ -2304,6 +2307,16 @@ fn validate_key_provider_inputs(kind: KeyProviderKind, kms_urls: &[String]) -> R
     Ok(())
 }
 
+fn validate_snp_derived_provider(platform: TeeVariant, is_kms_cvm: bool) -> Result<()> {
+    if platform != TeeVariant::DstackAmdSevSnp {
+        bail!("SnpDerived key provider requires an AMD SEV-SNP guest");
+    }
+    if !is_kms_cvm {
+        bail!("SnpDerived key provider is only allowed for the KMS CVM");
+    }
+    Ok(())
+}
+
 fn kms_rpc_url(base: &str) -> String {
     let base = base.trim_end_matches('/');
     if base.ends_with("/prpc") {
@@ -2503,6 +2516,14 @@ impl<'a> Stage0<'a> {
     async fn request_app_keys(&self) -> Result<AppKeys> {
         let key_provider = self.shared.app_compose.key_provider();
         validate_key_provider_inputs(key_provider, &self.shared.sys_config.kms_urls)?;
+        if key_provider == KeyProviderKind::SnpDerived {
+            let platform = detect_tee_variant().context("Failed to detect guest platform")?;
+            validate_snp_derived_provider(
+                platform,
+                // TODO: replace the name heuristic with a dedicated measured CVM role.
+                self.shared.app_compose.name == "dstack-kms",
+            )?;
+        }
         match key_provider {
             KeyProviderKind::Kms => self.request_app_keys_from_kms().await,
             KeyProviderKind::Local => self.get_keys_from_local_key_provider().await,
@@ -2516,7 +2537,36 @@ impl<'a> Stage0<'a> {
                 info!("Generating app keys from TPM");
                 self.generate_tpm_app_keys()
             }
+            KeyProviderKind::SnpDerived => {
+                info!("Deriving LUKS key from SNP processor");
+                self.generate_app_keys_from_snp_derived()
+                    .context("Failed to generate app keys from SNP-derived provider")
+            }
         }
+    }
+
+    fn generate_app_keys_from_snp_derived(&self) -> Result<AppKeys> {
+        // Derive the 32-byte LUKS key from SNP hardware
+        let disk_crypt_key = crate::snp_derive::derive_snp_luks_key()?;
+
+        // Generate other app keys from a random seed
+        let seed: [u8; 32] = rand::thread_rng().gen();
+        let key = derive_p256_key_pair_from_bytes(&seed, &["app-key".as_bytes()])?;
+        let k256_key = derive_key(&seed, &["app-k256-key".as_bytes()], 32)?;
+        let k256_key = SigningKey::from_bytes(&k256_key)
+            .context("Failed to parse k256 key")?;
+
+        // Create AppKeys with SNP-derived disk key and SnpDerived provider
+        let app_keys = make_app_keys_with_disk_key(
+            &key,
+            &disk_crypt_key,
+            &k256_key,
+            1,
+            KeyProvider::SnpDerived {
+                key: key.serialize_pem(),
+            },
+        )?;
+        Ok(app_keys)
     }
 
     async fn setup_swap(&self, swap_size: u64, opts: &DstackOptions) -> Result<()> {
@@ -2776,6 +2826,12 @@ impl<'a> Stage0<'a> {
 
     fn luks_setup(&self, disk_crypt_key: &str, name: &str) -> Result<()> {
         let root_hd = &self.args.device;
+        if cmd!(cryptsetup isLuks $root_hd).is_ok() {
+            bail!(
+                "Refusing to format existing LUKS disk {}; key opening must be handled by the existing-disk path",
+                root_hd.display()
+            );
+        }
         let sector_offset = PAYLOAD_OFFSET / 512;
         info!("Formatting encrypted disk");
         let sector_offset = sector_offset.to_string();
@@ -2861,7 +2917,7 @@ impl<'a> Stage0<'a> {
             .context("Failed to wait for cryptsetup luksOpen")?
             .success()
         {
-            bail!("Failed to open encrypted data disk");
+            bail!("Failed to open encrypted data disk: derived key did not unlock existing LUKS volume");
         }
 
         // Wait for device mapper to create the device
@@ -3007,6 +3063,9 @@ impl<'a> Stage0<'a> {
             KeyProvider::Kms { .. } => {
                 KeyProviderInfo::new("kms".into(), hex::encode(keys.key_provider.id()))
             }
+                KeyProvider::SnpDerived { .. } => {
+                    KeyProviderInfo::new("snp-derived".into(), "".into())
+                }
         };
         emit_key_provider_info(&kp_info)?;
         Ok(())
@@ -3868,8 +3927,11 @@ fn test_launch_token_from_user_config_rejects_missing_or_invalid_token() {
 
 #[cfg(test)]
 mod kms_provider_inventory_tests {
-    use super::{kms_rpc_url, validate_key_provider_inputs};
+    use super::{
+        kms_rpc_url, validate_key_provider_inputs, validate_snp_derived_provider,
+    };
     use dstack_types::KeyProviderKind;
+    use ra_tls::attestation::TeeVariant;
 
     #[test]
     fn normalizes_kms_rpc_urls_once() {
@@ -3893,6 +3955,26 @@ mod kms_provider_inventory_tests {
         assert!(validate_key_provider_inputs(KeyProviderKind::None, &no_urls).is_ok());
         let error = validate_key_provider_inputs(KeyProviderKind::Kms, &no_urls).unwrap_err();
         assert!(error.to_string().contains("No KMS URLs are set"));
+    }
+
+    #[test]
+    fn snp_derived_provider_requires_amd_snp_kms_cvm() {
+        let cases = [
+            (TeeVariant::DstackAmdSevSnp, true, true),
+            (TeeVariant::DstackAmdSevSnp, false, false),
+            (TeeVariant::DstackTdx, true, false),
+            (TeeVariant::DstackTdx, false, false),
+            (TeeVariant::DstackGcpTdx, true, false),
+            (TeeVariant::DstackGcpTdx, false, false),
+        ];
+
+        for (platform, is_kms_cvm, accepted) in cases {
+            assert_eq!(
+                validate_snp_derived_provider(platform, is_kms_cvm).is_ok(),
+                accepted,
+                "unexpected result for {platform:?}, is_kms_cvm={is_kms_cvm}"
+            );
+        }
     }
 }
 

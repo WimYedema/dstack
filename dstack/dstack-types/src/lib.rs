@@ -754,6 +754,7 @@ pub enum KeyProviderKind {
     Kms,
     Local,
     Tpm,
+    SnpDerived,
 }
 
 impl KeyProviderKind {
@@ -2259,6 +2260,9 @@ pub enum KeyProvider {
         tmp_ca_key: String,
         tmp_ca_cert: String,
     },
+    SnpDerived {
+        key: String,
+    },
 }
 
 impl KeyProvider {
@@ -2268,6 +2272,7 @@ impl KeyProvider {
             KeyProvider::Local { .. } => KeyProviderKind::Local,
             KeyProvider::Tpm { .. } => KeyProviderKind::Tpm,
             KeyProvider::Kms { .. } => KeyProviderKind::Kms,
+            KeyProvider::SnpDerived { .. } => KeyProviderKind::SnpDerived,
         }
     }
 
@@ -2279,12 +2284,14 @@ impl KeyProvider {
     ///   (from a TPM-sealed seed) and must not be treated as a stable provider id
     ///   or measured as one. Mode is already carried by [`Self::kind`].
     /// - None: empty
+    /// - SnpDerived: empty — hardware-derived keys have no measurable provider identity
     pub fn id(&self) -> &[u8] {
         match self {
             KeyProvider::None { .. } => &[],
             KeyProvider::Local { mr, .. } => mr,
             KeyProvider::Tpm { .. } => &[],
             KeyProvider::Kms { pubkey, .. } => pubkey,
+            KeyProvider::SnpDerived { .. } => &[],
         }
     }
 }

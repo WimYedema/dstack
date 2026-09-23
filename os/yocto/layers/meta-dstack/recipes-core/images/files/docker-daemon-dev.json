@@ -1,0 +1,15 @@
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "10"
+  },
+  "runtimes": {
+    "sysbox-runc": {
+      "path": "/usr/bin/sysbox-runc"
+    }
+  },
+  "insecure-registries": [
+    "10.0.2.2:5000"
+  ]
+}

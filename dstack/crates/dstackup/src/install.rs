@@ -167,7 +167,7 @@ pub(crate) async fn cmd_install(mut o: InstallOpts, release_api_base_url: &str) 
         key_provider_addr: kp_addr,
         key_provider_port: kp_port as u32,
         kms_urls: kms_urls.clone(),
-        amd_kds_url: o.amd_kds_url.clone().unwrap_or_default(),
+        sev_snp_kds_url: o.sev_snp_kds_url.clone().unwrap_or_default(),
         platform,
         auth_enabled: true,
         auth_token: vmm_token.clone(),
@@ -187,7 +187,7 @@ pub(crate) async fn cmd_install(mut o: InstallOpts, release_api_base_url: &str) 
         os_image_hash: os_image_hash.unwrap_or_default(),
         verify_os_image: false,
         platform,
-        amd_kds_url: o.amd_kds_url.clone().unwrap_or_default(),
+        sev_snp_kds_url: o.sev_snp_kds_url.clone().unwrap_or_default(),
         ..Default::default()
     };
     let kms = config::kms_toml(&host_cfg);
@@ -284,6 +284,24 @@ pub(crate) async fn cmd_install(mut o: InstallOpts, release_api_base_url: &str) 
                 .clone()
                 .context("kms deploy needs --image <version> (or pass --no-kms)")?;
             let compose = config::kms_app_compose(&kms, &o.kms_image, platform);
+            let mut ports = vec![rpc::PortMapping {
+                protocol: "tcp".into(),
+                host_address: "127.0.0.1".into(),
+                host_port: kms_port as u32,
+                vm_port: 8000,
+            }];
+            // Debug-only: forward the guest's sshd for interactive troubleshooting.
+            if let Ok(raw) = std::env::var("DSTACKUP_DEBUG_KMS_SSH_PORT") {
+                let ssh_port: u32 = raw
+                    .parse()
+                    .context("DSTACKUP_DEBUG_KMS_SSH_PORT must be a port number")?;
+                ports.push(rpc::PortMapping {
+                    protocol: "tcp".into(),
+                    host_address: "127.0.0.1".into(),
+                    host_port: ssh_port,
+                    vm_port: 22,
+                });
+            }
             let cfg = rpc::VmConfiguration {
                 name: "dstack-kms".into(),
                 image: img.clone(),
@@ -291,12 +309,7 @@ pub(crate) async fn cmd_install(mut o: InstallOpts, release_api_base_url: &str) 
                 vcpu: 4,
                 memory: 8192,
                 disk_size: 20,
-                ports: vec![rpc::PortMapping {
-                    protocol: "tcp".into(),
-                    host_address: "127.0.0.1".into(),
-                    host_port: kms_port as u32,
-                    vm_port: 8000,
-                }],
+                ports,
                 ..Default::default()
             };
             println!("  [..] deploying KMS CVM (os {img}, kms {})", o.kms_image);

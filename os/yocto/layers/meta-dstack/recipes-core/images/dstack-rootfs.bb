@@ -12,6 +12,6 @@ include dstack-rootfs-base.inc
 # Production or development mode
 include ${@'dstack-rootfs-dev.inc' if d.getVar('DSTACK_DEV') == '1' else 'dstack-rootfs-prod.inc'}
 
-# NVIDIA support is included in all images; services are gated at runtime by
-# hardware-detection ExecCondition= checks so the same image works without GPUs.
-include dstack-rootfs-nvidia.inc
+# NVIDIA support is intentionally omitted for the SNP KMS acceptance image.
+# Re-enable this include for the general-purpose GPU image.
+# include dstack-rootfs-nvidia.inc

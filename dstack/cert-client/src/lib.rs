@@ -70,6 +70,12 @@ impl CertRequestClient {
                     .context("Failed to create CA")?;
                 Ok(CertRequestClient::Local { ca: Box::new(ca) })
             }
+            KeyProvider::SnpDerived { key } => {
+                // SNP-derived keys are for disk encryption only; the app CA still uses its ephemeral key.
+                let ca = CaCert::new(keys.ca_cert.clone(), key.clone())
+                    .context("Failed to create CA")?;
+                Ok(CertRequestClient::Local { ca: Box::new(ca) })
+            }
             KeyProvider::Kms {
                 url,
                 tmp_ca_key,

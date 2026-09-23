@@ -32,6 +32,7 @@ fn key_provider_kind_byte(key_provider: KeyProviderKind) -> u8 {
         KeyProviderKind::Local => 1,
         KeyProviderKind::Kms => 2,
         KeyProviderKind::Tpm => 3,
+        KeyProviderKind::SnpDerived => 4,
     }
 }
 
@@ -197,6 +198,7 @@ impl MrConfigV3 {
             KeyProviderKind::Local => "local-sgx",
             KeyProviderKind::Kms => "kms",
             KeyProviderKind::Tpm => "tpm",
+            KeyProviderKind::SnpDerived => "amd-snp-derived",
         }
     }
 }
@@ -313,6 +315,76 @@ mod tests {
         assert_ne!(
             MrConfigV3::snp_host_data_from_document(&document),
             MrConfigV3::snp_host_data_from_document(&pretty)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snp_derived_provider_kind_serializes_correctly() -> Result<(), Box<dyn Error>> {
+        let config = MrConfigV3::new(
+            vec![0x11; 20],
+            vec![0x22; 32],
+            None,
+            KeyProviderKind::SnpDerived,
+            Vec::new(),
+            vec![0x44; 20],
+        );
+        let document = config.to_canonical_json();
+
+        // Verify SnpDerived is rendered as "snp_derived" in JSON (snake_case per serde config)
+        assert!(document.contains("snp_derived"));
+        assert_eq!(
+            document,
+            concat!(
+                "{\"app_id\":\"1111111111111111111111111111111111111111\",",
+                "\"compose_hash\":\"2222222222222222222222222222222222222222222222222222222222222222\",",
+                "\"instance_id\":\"4444444444444444444444444444444444444444\",",
+                "\"key_provider\":\"snp_derived\",",
+                "\"version\":3}"
+            )
+        );
+        // Verify round-trip deserialization
+        assert_eq!(MrConfigV3::from_document(&document)?, config);
+        Ok(())
+    }
+
+    #[test]
+    fn snp_derived_provider_kind_has_distinct_byte_encoding() {
+        // Verify SnpDerived encodes to byte 4, distinct from None(0), Local(1), Kms(2), Tpm(3)
+        assert_eq!(key_provider_kind_byte(KeyProviderKind::None), 0);
+        assert_eq!(key_provider_kind_byte(KeyProviderKind::Local), 1);
+        assert_eq!(key_provider_kind_byte(KeyProviderKind::Kms), 2);
+        assert_eq!(key_provider_kind_byte(KeyProviderKind::Tpm), 3);
+        assert_eq!(key_provider_kind_byte(KeyProviderKind::SnpDerived), 4);
+    }
+
+    #[test]
+    fn mr_config_v3_hash_changes_with_snp_derived_provider() -> Result<(), Box<dyn Error>> {
+        let config_none = MrConfigV3::new(
+            vec![0x11; 20],
+            vec![0x22; 32],
+            None,
+            KeyProviderKind::None,
+            Vec::new(),
+            vec![0x44; 20],
+        );
+        let config_snp = MrConfigV3::new(
+            vec![0x11; 20],
+            vec![0x22; 32],
+            None,
+            KeyProviderKind::SnpDerived,
+            Vec::new(),
+            vec![0x44; 20],
+        );
+
+        // Same app/compose but different provider must produce different hashes
+        assert_ne!(
+            config_none.to_snp_host_data(),
+            config_snp.to_snp_host_data()
+        );
+        assert_ne!(
+            config_none.to_tdx_mr_config_id(),
+            config_snp.to_tdx_mr_config_id()
         );
         Ok(())
     }
